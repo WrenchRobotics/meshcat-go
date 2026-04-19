@@ -1,6 +1,8 @@
-package zmqserver
+package zmq
 
 import (
+	"strconv"
+
 	"github.com/zeromq/goczmq"
 )
 
@@ -12,5 +14,5 @@ func StartZMQServerAsGoRoutine() (*goczmq.Sock, string, string, error) {
 	go bridge.Run()
 
 	// Read from the log file to get the URL and return it
-	return bridge.ZMQStream, bridge.Host, string(bridge.Port), nil
+	return bridge.ZMQStream, bridge.Host, strconv.Itoa(bridge.Port), nil
 }
