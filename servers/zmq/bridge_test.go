@@ -9,7 +9,18 @@ import (
 	"github.com/zeromq/goczmq"
 )
 
+// TestRunRespondsToURLCommand is a sanity check to make sure that
+// the Run method of the ZeroMQWebsocketBridge correctly responds to
+// a URL command with the expected Web URL.
+//
+// It should return the value of the WebUrl field of the bridge, which is supposed to be
+// set before Run is called. In this case, we will set it to:
+//
+// http://127.0.0.1:6003/static/
 func TestRunRespondsToURLCommand(t *testing.T) {
+	// Create a REP socket to act as the ZMQStream for the bridge,
+	// and a REQ socket to send commands to it.
+	// - Rep socket will be created and bound to a random port on localhost.
 	rep := goczmq.NewSock(goczmq.Rep)
 	if rep == nil {
 		t.Fatal("failed to create REP socket")
@@ -21,6 +32,7 @@ func TestRunRespondsToURLCommand(t *testing.T) {
 		t.Fatalf("failed to bind REP socket: %v", err)
 	}
 
+	// - Req socket will connect to the REP socket's endpoint.
 	req := goczmq.NewSock(goczmq.Req)
 	if req == nil {
 		rep.Destroy()

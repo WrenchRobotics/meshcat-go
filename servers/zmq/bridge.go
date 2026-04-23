@@ -3,10 +3,12 @@ package zmq
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/WrenchRobotics/meshcat-go/commands"
+	"github.com/WrenchRobotics/meshcat-go/scene"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/zeromq/goczmq"
@@ -21,8 +23,23 @@ type ZeroMQWebsocketBridge struct {
 	CertificateFile string
 	KeyFile         string
 	ZMQStream       *goczmq.Sock
-	stopCh          chan struct{}
-	stopOnce        sync.Once
+	SceneTree       *scene.TreeNode
+
+	// Hidden fields for internal use
+
+	// wsMu is used to synchronize access to the wsPool, which can be accessed concurrently by multiple goroutines (e.g. the main Run loop and the WebsocketHandler).
+	wsMu sync.RWMutex
+
+	// Websocket connection pool to keep track of all active websocket connections to the client.
+	wsPool map[*websocket.Conn]struct{}
+
+	// stopCh is used to signal the Run loop to stop.
+	// It should be closed when we want to stop the bridge.
+	stopCh chan struct{}
+
+	// stopOnce is used to ensure that the stopCh is only closed once,
+	// even if Stop is called multiple times.
+	stopOnce sync.Once
 }
 
 func NewZeroMQServer(
@@ -40,6 +57,7 @@ func NewZeroMQServer(
 		Port:            port,
 		CertificateFile: certificateFile,
 		KeyFile:         keyFile,
+		wsPool:          make(map[*websocket.Conn]struct{}),
 		stopCh:          make(chan struct{}),
 	}
 }
@@ -47,6 +65,55 @@ func NewZeroMQServer(
 func (bridge *ZeroMQWebsocketBridge) Destroy() {
 	if bridge.ZMQStream != nil {
 		bridge.ZMQStream.Destroy()
+	}
+}
+
+func (bridge *ZeroMQWebsocketBridge) addWebsocketConn(conn *websocket.Conn) {
+	bridge.wsMu.Lock()
+	defer bridge.wsMu.Unlock()
+
+	if bridge.wsPool == nil {
+		bridge.wsPool = make(map[*websocket.Conn]struct{})
+	}
+
+	bridge.wsPool[conn] = struct{}{}
+}
+
+func (bridge *ZeroMQWebsocketBridge) removeWebsocketConn(conn *websocket.Conn) {
+	bridge.wsMu.Lock()
+	defer bridge.wsMu.Unlock()
+
+	if bridge.wsPool == nil {
+		return
+	}
+
+	delete(bridge.wsPool, conn)
+}
+
+func (bridge *ZeroMQWebsocketBridge) hasWebsocketConn() bool {
+	bridge.wsMu.RLock()
+	defer bridge.wsMu.RUnlock()
+
+	return len(bridge.wsPool) > 0
+}
+
+func (bridge *ZeroMQWebsocketBridge) waitForWebsockets() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if bridge.hasWebsocketConn() {
+			if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
+				log.Printf("failed to reply to wait command: %v", err)
+			}
+			return
+		}
+
+		select {
+		case <-bridge.stopCh:
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -60,17 +127,124 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		panic("Received empty frame slice")
 	}
 
-	// Meshcat Protocol logic
+	// Attempt to handle the frames according to:
+	// - Standard ZMQ commands (e.g. "url", "wait", etc.)
 	cmd := string(frames[0])
 	switch cmd {
 	case commands.Url:
 		log.Printf("Received URL command: %s", cmd)
 		bridge.ZMQStream.SendFrame([]byte(bridge.WebUrl), goczmq.FlagNone)
+		return
+	case commands.Wait:
+		log.Printf("Received Wait command: %s", cmd)
+		bridge.waitForWebsockets()
+		return
 
-	// TODO(Kwesi): Implement the rest of the Meshcat ZMQ protocol here.
-	default:
-		log.Printf("Received unrecognized command: %s", cmd)
 	}
+
+	// - Meshcat-specific commands (e.g. "set_transform", etc.)
+
+	// Check to see if the command is a Meshcat-specific command
+	if commands.IsMeshcatCommand(cmd) {
+
+		// If so, then we need to extract the following important data:
+		// - path to the relevant object,
+		path := make([]string, 0)
+
+		for _, part := range strings.Split(string(frames[1]), "/") {
+			if part != "" {
+				path = append(path, part)
+			}
+		}
+
+		// - data payload (e.g. transform data, object data, etc.)
+		data := frames[2]
+
+		switch cmd {
+		case commands.SetTransform:
+			log.Println("Received SetTransform command")
+
+			// Get the node corresponding to the current path
+			targetNode := bridge.SceneTree.GetPath(path)
+			if targetNode == nil {
+				log.Printf("Failed to find target node for path: %v", path)
+				return
+			}
+
+			// Parse the transform data from the frames and apply it to the target node.
+			targetNode.Transform = data // Placeholder: In reality, we would parse the transform data and set it appropriately. (Maybe this isn't necessary if we just want to store the raw data and let the client handle it?)
+
+		case commands.SetObject:
+			log.Println("Received SetObject command")
+
+			// Get the node corresponding to the current path
+			targetNode := bridge.SceneTree.GetPath(path)
+			if targetNode == nil {
+				log.Printf("Failed to find target node for path: %v", path)
+				return
+			}
+
+			// Set the object data on the target node AND clear the object's properties (since setting a new object should clear any existing properties).
+			targetNode.Object = data
+			targetNode.Properties = make([]any, 0)
+
+		case commands.SetProperty:
+			log.Println("Received SetProperty command")
+
+			// Get the node corresponding to the current path
+			targetNode := bridge.SceneTree.GetPath(path)
+			if targetNode == nil {
+				log.Printf("Failed to find target node for path: %v", path)
+				return
+			}
+
+			// Add the new property to the target node's properties.
+			targetNode.Properties = append(targetNode.Properties, data)
+
+		case commands.SetAnimation:
+			log.Println("Received SetAnimation command")
+
+			// Get the node corresponding to the current path
+			targetNode := bridge.SceneTree.GetPath(path)
+			if targetNode == nil {
+				log.Printf("Failed to find target node for path: %v", path)
+				return
+			}
+
+			// Set the animation data on the target node.
+			targetNode.Animation = data
+
+		case commands.Delete:
+			log.Println("Received Delete command")
+
+			// Check to see if the path has nonzero length (if not, then we are trying to delete the root node)
+			if len(path) > 0 {
+				parentPath := path[:len(path)-1]
+				childKey := path[len(path)-1]
+
+				// Get the parent node corresponding to the parent path
+				parentNode := bridge.SceneTree.GetPath(parentPath)
+				if parentNode == nil {
+					log.Printf("Failed to find parent node for path: %v", parentPath)
+					return
+				}
+
+				// Delete the child node from the parent's children map (if it exists)
+				if parentNode.Children != nil {
+					delete(parentNode.Children, childKey)
+				}
+			} else {
+				// If the path is empty, then we are trying to delete the root node. We can interpret this as clearing the entire scene tree.
+				bridge.SceneTree = scene.NewTreeNode()
+			}
+
+		}
+
+		return
+	}
+
+	// Otherwise, we can log the unrecognized command and ignore it for now.
+	log.Printf("Received unrecognized command: %s", cmd)
 
 }
 
@@ -88,7 +262,13 @@ func (bridge *ZeroMQWebsocketBridge) WebsocketHandler(ctx *gin.Context) {
 		log.Println("upgrade:", err)
 		return
 	}
-	defer func() { _ = c.Close() }()
+
+	bridge.addWebsocketConn(c)
+	defer func() {
+		bridge.removeWebsocketConn(c)
+		_ = c.Close()
+	}()
+
 	for {
 		mt, message, err := c.ReadMessage()
 		if err != nil {
@@ -109,7 +289,8 @@ func NewZeroMQWebsocketBridge() *ZeroMQWebsocketBridge {
 	defaultPort := 6000
 
 	bridge := ZeroMQWebsocketBridge{
-		Host: ZMQ_DEFAULT_HOST,
+		Host:   ZMQ_DEFAULT_HOST,
+		wsPool: make(map[*websocket.Conn]struct{}),
 		stopCh: make(chan struct{}),
 	}
 
