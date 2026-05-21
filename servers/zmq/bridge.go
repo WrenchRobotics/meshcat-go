@@ -18,10 +18,12 @@ import (
 	"github.com/zeromq/goczmq"
 )
 
+// ZeroMQWebsocketBridge forwards Meshcat commands between a ZMQ REP socket and
+// browser websocket clients, while maintaining an in-memory scene cache.
 type ZeroMQWebsocketBridge struct {
 	GorillaUpgrader *websocket.Upgrader
 	ZMQUrl          string
-	WebUrl          string
+	WebUrl          string // The URL where the websocket can be accessed by clients (e.g. the Meshcat viewer). This is typically different from ZMQUrl since the websocket is served via the Gin router on a different port.
 	Host            string
 	Port            int
 	CertificateFile string
@@ -88,17 +90,25 @@ func (bridge *ZeroMQWebsocketBridge) addWebsocketConn(conn *websocket.Conn) {
 	}
 
 	bridge.wsPool[conn] = struct{}{}
+	if conn != nil {
+		log.Printf("WebSocket connection added: %v. Total connections: %d", conn.RemoteAddr(), len(bridge.wsPool))
+	} else {
+		log.Printf("WebSocket connection added: <nil>. Total connections: %d", len(bridge.wsPool))
+	}
 }
 
 func (bridge *ZeroMQWebsocketBridge) removeWebsocketConn(conn *websocket.Conn) {
 	bridge.wsMu.Lock()
 	defer bridge.wsMu.Unlock()
 
-	if bridge.wsPool == nil {
-		return
+	if bridge.wsPool != nil {
+		delete(bridge.wsPool, conn)
+		if conn != nil {
+			log.Printf("WebSocket connection removed: %v. Total connections: %d", conn.RemoteAddr(), len(bridge.wsPool))
+		} else {
+			log.Printf("WebSocket connection removed: <nil>. Total connections: %d", len(bridge.wsPool))
+		}
 	}
-
-	delete(bridge.wsPool, conn)
 }
 
 func (bridge *ZeroMQWebsocketBridge) hasWebsocketConn() bool {
@@ -109,12 +119,15 @@ func (bridge *ZeroMQWebsocketBridge) hasWebsocketConn() bool {
 }
 
 func (bridge *ZeroMQWebsocketBridge) forwardToWebsockets(data []byte) {
-	bridge.wsMu.RLock()
-	defer bridge.wsMu.RUnlock()
+	if !bridge.hasWebsocketConn() {
+		log.Println("No active WebSocket connections. Cannot forward data.")
+		return
+	}
 
+	log.Printf("Forwarding data to WebSocket connections: %d bytes", len(data))
 	for conn := range bridge.wsPool {
 		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			log.Printf("failed to forward message to websocket: %v", err)
+			log.Printf("Failed to forward data to WebSocket: %v", err)
 		}
 	}
 }
@@ -176,6 +189,36 @@ func (bridge *ZeroMQWebsocketBridge) waitForWebsockets() {
 	}
 }
 
+func (bridge *ZeroMQWebsocketBridge) WaitForWebsocketConnection(timeout time.Duration) error {
+	if bridge == nil {
+		return fmt.Errorf("bridge is nil")
+	}
+
+	if bridge.hasWebsocketConn() {
+		return nil
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if bridge.hasWebsocketConn() {
+			return nil
+		}
+
+		select {
+		case <-bridge.stopCh:
+			return fmt.Errorf("bridge stopped before websocket connected")
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for websocket connection")
+		case <-ticker.C:
+		}
+	}
+}
+
 func decodeCaptureImagePayload(msg []byte) ([]byte, error) {
 	var payload struct {
 		Data string `json:"data"`
@@ -219,6 +262,14 @@ func (bridge *ZeroMQWebsocketBridge) sendExpected3FramesError(cmd string) {
 // handles the input frames according to Meshcat's ZMQ protocol.
 // It returns a string response that can be sent back to the client.
 func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
+	bridge.handleFrameSlice(frames, true)
+}
+
+func (bridge *ZeroMQWebsocketBridge) HandleLocalFrameSlice(frames [][]byte) {
+	bridge.handleFrameSlice(frames, false)
+}
+
+func (bridge *ZeroMQWebsocketBridge) handleFrameSlice(frames [][]byte, sendReplies bool) {
 	// Input Checking
 	if len(frames) == 0 {
 		log.Println("Received empty frame slice")
@@ -228,28 +279,52 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 	// Attempt to handle the frames according to:
 	// - Standard ZMQ commands (e.g. "url", "wait", etc.)
 	cmd := string(frames[0])
+	log.Printf("Handling ZMQ command: %s", cmd)
+
+	if sendReplies && bridge.ZMQStream == nil {
+		log.Println("ZMQStream is not initialized. Cannot handle command.")
+		return
+	}
+
 	switch cmd {
 	case commands.Url:
 		log.Printf("Received URL command: %s", cmd)
-		bridge.ZMQStream.SendFrame([]byte(bridge.WebUrl), goczmq.FlagNone)
+		if !sendReplies {
+			return
+		}
+		if err := bridge.ZMQStream.SendFrame([]byte(bridge.WebUrl), goczmq.FlagNone); err != nil {
+			log.Printf("Failed to send URL response: %v", err)
+		}
 		return
 	case commands.Wait:
 		log.Printf("Received Wait command: %s", cmd)
+		if !sendReplies {
+			return
+		}
 		bridge.waitForWebsockets()
 		return
 	case commands.SetTarget:
 		log.Printf("Received SetTarget command: %s", cmd)
 		if len(frames) != 3 {
+			if !sendReplies {
+				return
+			}
 			bridge.sendExpected3FramesError(cmd)
 			return
 		}
 		bridge.forwardToWebsockets(frames[2])
+		if !sendReplies {
+			return
+		}
 		if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
-			log.Printf("failed to send ok for set_target: %v", err)
+			log.Printf("Failed to send ok response for SetTarget command: %v", err)
 		}
 		return
 	case commands.CaptureImage:
 		log.Printf("Received CaptureImage command: %s", cmd)
+		if !sendReplies {
+			return
+		}
 
 		if len(frames) != 3 {
 			bridge.sendExpected3FramesError(cmd)
@@ -273,7 +348,7 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		select {
 		case img := <-respCh:
 			if err := bridge.ZMQStream.SendFrame(img, goczmq.FlagNone); err != nil {
-				log.Printf("failed to send capture_image payload: %v", err)
+				log.Printf("Failed to send capture_image payload: %v", err)
 			}
 		case <-bridge.stopCh:
 			return
@@ -281,6 +356,9 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		return
 	case commands.GetScene:
 		log.Printf("Received GetScene command: %s", cmd)
+		if !sendReplies {
+			return
+		}
 		var drawingCmds strings.Builder
 		bridge.SceneTree.Walk(func(node *scene.TreeNode) {
 			if node.Object != nil {
@@ -337,6 +415,9 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 	// Check to see if the command is a Meshcat-specific command
 	if commands.IsMeshcatCommand(cmd) {
 		if len(frames) != 3 {
+			if !sendReplies {
+				return
+			}
 			bridge.sendExpected3FramesError(cmd)
 			return
 		}
@@ -450,8 +531,10 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 		// For all meshcat commands, send an "ok" response
 		// via the ZMQ stream to acknowledge that we received and processed the command.
-		if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
-			log.Printf("failed to send ok response for command %s: %v", cmd, err)
+		if sendReplies {
+			if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
+				log.Printf("failed to send ok response for command %s: %v", cmd, err)
+			}
 		}
 
 		return
@@ -459,6 +542,9 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 	// Otherwise, we can log the unrecognized command and also send a response to the ZMQ stream.
 	log.Printf("Received unrecognized command: %s", cmd)
+	if !sendReplies {
+		return
+	}
 	if err := bridge.ZMQStream.SendFrame([]byte("error: unrecognized command"), goczmq.FlagNone); err != nil {
 		log.Printf("failed to send error response for command %s: %v", cmd, err)
 	}
@@ -519,7 +605,17 @@ func (bridge *ZeroMQWebsocketBridge) WebsocketHandler(ctx *gin.Context) {
 	}
 }
 
+// NewZeroMQWebsocketBridge creates a bridge configured with the default
+// Meshcat web server port.
 func NewZeroMQWebsocketBridge() *ZeroMQWebsocketBridge {
+	return NewZeroMQWebsocketBridgeWithWebPort(DEFAULT_FILESERVER_PORT)
+}
+
+// NewZeroMQWebsocketBridgeWithWebPort creates a bridge and sets the advertised
+// WebUrl using the provided HTTP port.
+//
+// The bridge still auto-selects an available ZMQ REP port independently.
+func NewZeroMQWebsocketBridgeWithWebPort(webPort int) *ZeroMQWebsocketBridge {
 	// Select a URL for the zmq server
 	defaultPort := 6000
 
@@ -537,7 +633,7 @@ func NewZeroMQWebsocketBridge() *ZeroMQWebsocketBridge {
 	bridge.ZMQStream = zmqStream
 	bridge.Port = foundPort
 	bridge.ZMQUrl = GenerateZMQUrl("tcp", bridge.Host, foundPort)
-	bridge.WebUrl = bridge.BuildWebUrl(DEFAULT_FILESERVER_PORT)
+	bridge.WebUrl = bridge.BuildWebUrl(webPort)
 
 	// Report the zmq url and the web url
 	log.Printf("ZeroMQ Websocket Bridge started at %s:%d", bridge.Host, bridge.Port)
@@ -614,12 +710,15 @@ func (bridge *ZeroMQWebsocketBridge) SetUpZMQ(port int) (*goczmq.Sock, *goczmq.S
 	// REP enforces a strict receive-then-send cycle, which is the protocol used
 	// by all meshcat clients (Python, Go, etc.).
 	targetURL := GenerateZMQUrl(defaultZMQMethod, bridge.Host, port)
+	log.Printf("Attempting to bind ZMQ REP socket to URL: %s", targetURL)
 	repSocket := goczmq.NewSock(goczmq.Rep)
 	if _, err := repSocket.Bind(targetURL); err != nil {
+		log.Printf("Failed to bind ZMQ REP socket to URL %s: %v", targetURL, err)
 		repSocket.Destroy()
 		return nil, nil, err
 	}
 
+	log.Printf("Successfully bound ZMQ REP socket to URL: %s", targetURL)
 	return nil, repSocket, nil
 }
 
@@ -634,6 +733,7 @@ func zmqCreateCommand(data []byte) string {
 	)
 }
 
+// BuildWebUrl returns the viewer URL for the given HTTP file-server port.
 func (bridge *ZeroMQWebsocketBridge) BuildWebUrl(fileServerPort int) string {
 	protocol := "http:"
 

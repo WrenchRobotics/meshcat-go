@@ -2,6 +2,7 @@ package zmq
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/zeromq/goczmq"
 )
@@ -28,4 +29,19 @@ func FindAvailablePort(
 		}
 	}
 	return nil, nil, -1, fmt.Errorf("failed to find an available port")
+}
+
+func FindAvailableTCPPort() (int, error) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+	defer listener.Close()
+
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("listener did not return a TCP address")
+	}
+
+	return addr.Port, nil
 }

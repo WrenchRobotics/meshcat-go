@@ -1,9 +1,13 @@
 package meshcat
 
 import (
+	"context"
 	"io/fs"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	meshcatgo "github.com/WrenchRobotics/meshcat-go"
 	zmqserver "github.com/WrenchRobotics/meshcat-go/servers/zmq"
@@ -23,11 +27,30 @@ type MeshcatWebServerApplication struct {
 	// WebRouter is the Gin router that defines the web application.
 	// It is defined as a field in the struct so that it can be used to start the web server in a separate goroutine.
 	WebRouter *gin.Engine
+
+	// WebPort is the port used by the HTTP server and advertised by the bridge web URL.
+	WebPort int
+
+	// WebServer serves the Gin router on either a reserved listener or a port-bound socket.
+	WebServer *http.Server
+
+	// Listener is the reserved HTTP listener used by the default constructor.
+	Listener net.Listener
 }
 
-func (app *MeshcatWebServerApplication) RunWebServer(port int) {
-	err := app.WebRouter.Run(":" + strconv.Itoa(port))
-	if err != nil {
+func (app *MeshcatWebServerApplication) RunWebServer() {
+	if app.WebServer == nil {
+		app.WebServer = &http.Server{Handler: app.WebRouter}
+	}
+
+	if app.Listener != nil {
+		if err := app.WebServer.Serve(app.Listener); err != nil && err != http.ErrServerClosed {
+			panic(err)
+		}
+		return
+	}
+
+	if err := app.WebServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
 }
@@ -42,21 +65,69 @@ func (app *MeshcatWebServerApplication) Start() {
 	go app.Bridge.Run()
 
 	// Start the Gin web server in a separate goroutine
-	go app.RunWebServer(8080)
+	go app.RunWebServer()
 }
 
+func (app *MeshcatWebServerApplication) Stop() error {
+	app.Bridge.Stop()
+
+	if app.WebServer == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	return app.WebServer.Shutdown(ctx)
+}
+
+// NewMeshcatWebServerApplication creates a Meshcat web server application
+// using an available HTTP port on the local machine.
 func NewMeshcatWebServerApplication() MeshcatWebServerApplication {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		panic(err)
+	}
+
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = listener.Close()
+		panic("listener did not return a TCP address")
+	}
+
+	app := NewMeshcatWebServerApplicationWithPort(addr.Port)
+	app.Listener = listener
+	app.WebServer = &http.Server{Handler: app.WebRouter}
+
+	return app
+}
+
+// NewMeshcatWebServerApplicationWithPort creates a Meshcat web server application
+// using the provided HTTP port.
+//
+// The same webPort value is used to:
+//  1. start the Gin HTTP server, and
+//  2. build the bridge WebUrl advertised to ZMQ clients.
+//
+// Keeping those values aligned ensures the viewer opens on the same port that
+// the browser can connect to for websocket updates.
+func NewMeshcatWebServerApplicationWithPort(webPort int) MeshcatWebServerApplication {
 	// Create a new zmq websocket bridge
-	bridge := zmqserver.NewZeroMQWebsocketBridge()
+	bridge := zmqserver.NewZeroMQWebsocketBridgeWithWebPort(webPort)
 
 	// Set the router as the default one shipped with Gin
 	router := gin.Default()
 
 	// Serve the JavaScript MeshCat viewer bundled as a git submodule.
 	distFS, _ := fs.Sub(meshcatgo.ViewerAssets, "third_party/meshcat-js/dist")
-	router.StaticFS("/viewer", http.FS(distFS))
+	router.StaticFS("/static", http.FS(distFS))
 	router.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusTemporaryRedirect, "/viewer")
+		// Meshcat JS defaults to ws://<host> (no path), so accept websocket upgrades on root.
+		if strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
+			bridge.WebsocketHandler(c)
+			return
+		}
+		c.Redirect(http.StatusTemporaryRedirect, "/static/")
 	})
 
 	// Define websocket endpoint
@@ -78,5 +149,10 @@ func NewMeshcatWebServerApplication() MeshcatWebServerApplication {
 	return MeshcatWebServerApplication{
 		Bridge:    bridge,
 		WebRouter: router,
+		WebPort:   webPort,
+		WebServer: &http.Server{
+			Addr:    ":" + strconv.Itoa(webPort),
+			Handler: router,
+		},
 	}
 }
