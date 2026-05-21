@@ -1,7 +1,9 @@
 package zmq
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -42,6 +44,13 @@ type ZeroMQWebsocketBridge struct {
 	// stopOnce is used to ensure that the stopCh is only closed once,
 	// even if Stop is called multiple times.
 	stopOnce sync.Once
+
+	// captureMu guards captureRespCh lifecycle.
+	captureMu sync.Mutex
+
+	// captureRespCh is non-nil while waiting for a capture_image response
+	// from a websocket client.
+	captureRespCh chan []byte
 }
 
 func NewZeroMQServer(
@@ -110,6 +119,43 @@ func (bridge *ZeroMQWebsocketBridge) forwardToWebsockets(data []byte) {
 	}
 }
 
+func (bridge *ZeroMQWebsocketBridge) sendScene(conn *websocket.Conn) {
+	if conn == nil || bridge.SceneTree == nil {
+		return
+	}
+
+	bridge.SceneTree.Walk(func(node *scene.TreeNode) {
+		if node.Object != nil {
+			if b, ok := node.Object.([]byte); ok {
+				if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
+					log.Printf("failed to send object to websocket: %v", err)
+				}
+			}
+		}
+		for _, p := range node.Properties {
+			if b, ok := p.([]byte); ok {
+				if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
+					log.Printf("failed to send property to websocket: %v", err)
+				}
+			}
+		}
+		if node.Transform != nil {
+			if b, ok := node.Transform.([]byte); ok {
+				if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
+					log.Printf("failed to send transform to websocket: %v", err)
+				}
+			}
+		}
+		if node.Animation != nil {
+			if b, ok := node.Animation.([]byte); ok {
+				if err := conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
+					log.Printf("failed to send animation to websocket: %v", err)
+				}
+			}
+		}
+	})
+}
+
 func (bridge *ZeroMQWebsocketBridge) waitForWebsockets() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -127,6 +173,45 @@ func (bridge *ZeroMQWebsocketBridge) waitForWebsockets() {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+func decodeCaptureImagePayload(msg []byte) ([]byte, error) {
+	var payload struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(msg, &payload); err != nil {
+		return nil, err
+	}
+
+	parts := strings.SplitN(payload.Data, ",", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("capture payload missing data url prefix")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	return decoded, nil
+}
+
+func (bridge *ZeroMQWebsocketBridge) setCaptureResponseChannel(ch chan []byte) {
+	bridge.captureMu.Lock()
+	defer bridge.captureMu.Unlock()
+	bridge.captureRespCh = ch
+}
+
+func (bridge *ZeroMQWebsocketBridge) getCaptureResponseChannel() chan []byte {
+	bridge.captureMu.Lock()
+	defer bridge.captureMu.Unlock()
+	return bridge.captureRespCh
+}
+
+func (bridge *ZeroMQWebsocketBridge) sendExpected3FramesError(cmd string) {
+	if err := bridge.ZMQStream.SendFrame([]byte("error: expected 3 frames"), goczmq.FlagNone); err != nil {
+		log.Printf("failed to send frame-count error for command %s: %v", cmd, err)
 	}
 }
 
@@ -154,9 +239,44 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		return
 	case commands.SetTarget:
 		log.Printf("Received SetTarget command: %s", cmd)
+		if len(frames) != 3 {
+			bridge.sendExpected3FramesError(cmd)
+			return
+		}
 		bridge.forwardToWebsockets(frames[2])
 		if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
 			log.Printf("failed to send ok for set_target: %v", err)
+		}
+		return
+	case commands.CaptureImage:
+		log.Printf("Received CaptureImage command: %s", cmd)
+
+		if len(frames) != 3 {
+			bridge.sendExpected3FramesError(cmd)
+			return
+		}
+
+		for !bridge.hasWebsocketConn() {
+			select {
+			case <-bridge.stopCh:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+
+		respCh := make(chan []byte, 1)
+		bridge.setCaptureResponseChannel(respCh)
+		defer bridge.setCaptureResponseChannel(nil)
+
+		bridge.forwardToWebsockets(frames[2])
+
+		select {
+		case img := <-respCh:
+			if err := bridge.ZMQStream.SendFrame(img, goczmq.FlagNone); err != nil {
+				log.Printf("failed to send capture_image payload: %v", err)
+			}
+		case <-bridge.stopCh:
+			return
 		}
 		return
 	case commands.GetScene:
@@ -216,6 +336,10 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 	// Check to see if the command is a Meshcat-specific command
 	if commands.IsMeshcatCommand(cmd) {
+		if len(frames) != 3 {
+			bridge.sendExpected3FramesError(cmd)
+			return
+		}
 
 		// If so, then we need to extract the following important data:
 		// - path to the relevant object,
@@ -230,6 +354,8 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		// - data payload (e.g. transform data, object data, etc.)
 		data := frames[2]
 
+		cacheHit := false
+
 		switch cmd {
 		case commands.SetTransform:
 			log.Println("Received SetTransform command")
@@ -243,6 +369,7 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 			// Parse the transform data from the frames and apply it to the target node.
 			targetNode.Transform = data // Placeholder: In reality, we would parse the transform data and set it appropriately. (Maybe this isn't necessary if we just want to store the raw data and let the client handle it?)
+			bridge.forwardToWebsockets(data)
 
 		case commands.SetObject:
 			log.Println("Received SetObject command")
@@ -254,9 +381,17 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 				return
 			}
 
+			if existing, ok := targetNode.Object.([]byte); ok && bytes.Equal(existing, data) {
+				cacheHit = true
+			}
+
 			// Set the object data on the target node AND clear the object's properties (since setting a new object should clear any existing properties).
 			targetNode.Object = data
 			targetNode.Properties = make([]any, 0)
+
+			if !cacheHit {
+				bridge.forwardToWebsockets(data)
+			}
 
 		case commands.SetProperty:
 			log.Println("Received SetProperty command")
@@ -270,6 +405,7 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 			// Add the new property to the target node's properties.
 			targetNode.Properties = append(targetNode.Properties, data)
+			bridge.forwardToWebsockets(data)
 
 		case commands.SetAnimation:
 			log.Println("Received SetAnimation command")
@@ -283,6 +419,7 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 
 			// Set the animation data on the target node.
 			targetNode.Animation = data
+			bridge.forwardToWebsockets(data)
 
 		case commands.Delete:
 			log.Println("Received Delete command")
@@ -307,15 +444,24 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 				// If the path is empty, then we are trying to delete the root node. We can interpret this as clearing the entire scene tree.
 				bridge.SceneTree = scene.NewTreeNode()
 			}
+			bridge.forwardToWebsockets(data)
 
+		}
+
+		// For all meshcat commands, send an "ok" response
+		// via the ZMQ stream to acknowledge that we received and processed the command.
+		if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
+			log.Printf("failed to send ok response for command %s: %v", cmd, err)
 		}
 
 		return
 	}
 
-	// Otherwise, we can log the unrecognized command and ignore it for now.
+	// Otherwise, we can log the unrecognized command and also send a response to the ZMQ stream.
 	log.Printf("Received unrecognized command: %s", cmd)
-
+	if err := bridge.ZMQStream.SendFrame([]byte("error: unrecognized command"), goczmq.FlagNone); err != nil {
+		log.Printf("failed to send error response for command %s: %v", cmd, err)
+	}
 }
 
 // WebsocketHandler is the handler for the websocket endpoint defined in the Gin router.
@@ -325,6 +471,9 @@ func (bridge *ZeroMQWebsocketBridge) WebsocketHandler(ctx *gin.Context) {
 	// Collect the Gorilla websocket Upgrader
 	// TODO(Kwesi): Describe what the upgrader is doing here?
 	upgrader := bridge.GorillaUpgrader
+	if upgrader == nil {
+		upgrader = &websocket.Upgrader{}
+	}
 
 	w, r := ctx.Writer, ctx.Request
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -339,17 +488,33 @@ func (bridge *ZeroMQWebsocketBridge) WebsocketHandler(ctx *gin.Context) {
 		_ = c.Close()
 	}()
 
+	// Immediately send the current scene state so new clients render the
+	// existing world before incremental updates arrive.
+	bridge.sendScene(c)
+
 	for {
 		mt, message, err := c.ReadMessage()
 		if err != nil {
 			log.Println("read:", err)
 			break
 		}
-		log.Printf("recv:%s", message)
-		err = c.WriteMessage(mt, message)
-		if err != nil {
-			log.Println("write:", err)
-			break
+
+		if mt == websocket.TextMessage {
+			imgBytes, err := decodeCaptureImagePayload(message)
+			if err != nil {
+				log.Printf("failed to parse websocket message: %v", err)
+				continue
+			}
+
+			respCh := bridge.getCaptureResponseChannel()
+			if respCh == nil {
+				continue
+			}
+
+			select {
+			case respCh <- imgBytes:
+			default:
+			}
 		}
 	}
 }
@@ -394,6 +559,19 @@ func (bridge *ZeroMQWebsocketBridge) Stop() {
 
 func (bridge *ZeroMQWebsocketBridge) Run() {
 	// Starts running the ZeroMQ Websocket Bridge.
+	//
+	// TODO: Consider replacing the polling loop below with a goczmq.NewChanneler-based approach,
+	// which exposes RecvC/SendC channels and allows a clean select{} over stopCh and incoming
+	// ZMQ frames without busy-waiting or SetRcvtimeo.
+	// Trade-offs to be aware of before doing so:
+	//   - NewChanneler takes ownership of the socket; SetRcvtimeo and direct SendFrame calls
+	//     from outside the channeler goroutine become unsafe (ZMQ sockets are not thread-safe).
+	//   - All reply sends in HandleZMQFrameSlice (ZMQStream.SendFrame) must be routed through
+	//     channeler.SendC instead, requiring changes at every call site.
+	//   - The channeler's internal goroutine swallows errors silently; the current loop surfaces
+	//     RecvMessageNoWait errors explicitly.
+	//   - Calling channeler.Destroy() also destroys the underlying socket, so bridge.Destroy()
+	//     must not be called afterward.
 	if bridge.ZMQStream == nil {
 		log.Println("ZMQ stream is nil; cannot start bridge loop")
 		return
