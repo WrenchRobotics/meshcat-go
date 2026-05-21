@@ -3,6 +3,8 @@ package commands
 const Url string = "url"
 const Wait string = "wait"
 const CaptureImage string = "capture_image"
+const SetTarget string = "set_target"
+const GetScene string = "get_scene"
 
 // Meshcat-Specific Commands
 const SetTransform string = "set_transform"

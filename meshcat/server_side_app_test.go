@@ -1,4 +1,4 @@
-package zmqserver_test
+package meshcat
 
 import (
 	"net/http"
@@ -6,14 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/WrenchRobotics/meshcat-go/meshcat"
 	"github.com/gin-gonic/gin"
 )
 
 func TestDefineWebsocketApp_RootRedirectsToViewer(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	serverApp := meshcat.NewMeshcatWebServerApplication()
+	serverApp := NewMeshcatWebServerApplication()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp := httptest.NewRecorder()
 
@@ -32,7 +31,7 @@ func TestDefineWebsocketApp_RootRedirectsToViewer(t *testing.T) {
 func TestDefineWebsocketApp_ViewerIndexIsServedFromEmbeddedAssets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	serverApp := meshcat.NewMeshcatWebServerApplication()
+	serverApp := NewMeshcatWebServerApplication()
 	req := httptest.NewRequest(http.MethodGet, "/viewer/", nil)
 	resp := httptest.NewRecorder()
 

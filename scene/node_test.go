@@ -1,13 +1,11 @@
-package scene_test
+package scene
 
 import (
 	"testing"
-
-	scenepkg "github.com/WrenchRobotics/meshcat-go/scene"
 )
 
 func TestNewTreeNodeInitializesDefaults(t *testing.T) {
-	node := scenepkg.NewTreeNode()
+	node := NewTreeNode()
 
 	if node == nil {
 		t.Fatal("expected NewTreeNode to return a non-nil node")
@@ -36,7 +34,7 @@ func TestNewTreeNodeInitializesDefaults(t *testing.T) {
 }
 
 func TestChildCreatesAndReusesChildNode(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 
 	child1 := root.Child("camera")
 	if child1 == nil {
@@ -56,7 +54,7 @@ func TestChildCreatesAndReusesChildNode(t *testing.T) {
 }
 
 func TestChildInitializesNilChildrenMap(t *testing.T) {
-	root := &scenepkg.TreeNode{}
+	root := &TreeNode{}
 
 	child := root.Child("lights")
 	if child == nil {
@@ -71,7 +69,7 @@ func TestChildInitializesNilChildrenMap(t *testing.T) {
 }
 
 func TestGetPathCreatesPathAndReturnsTerminalNode(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 	path := []string{"world", "robot", "arm"}
 
 	terminal := root.GetPath(path)
@@ -102,7 +100,7 @@ func TestGetPathCreatesPathAndReturnsTerminalNode(t *testing.T) {
 }
 
 func TestGetPathWithEmptyPathReturnsRoot(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 
 	got := root.GetPath(nil)
 	if got != root {
@@ -116,7 +114,7 @@ func TestGetPathWithEmptyPathReturnsRoot(t *testing.T) {
 }
 
 func TestFindPathReturnsNodeWhenPathExists(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 	expected := root.GetPath([]string{"scene", "table", "leg"})
 
 	got, ok := root.FindPath([]string{"scene", "table", "leg"})
@@ -129,7 +127,7 @@ func TestFindPathReturnsNodeWhenPathExists(t *testing.T) {
 }
 
 func TestFindPathReturnsNilAndDoesNotCreateWhenMissing(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 	root.GetPath([]string{"existing"})
 
 	before := len(root.Children)
@@ -149,7 +147,7 @@ func TestFindPathReturnsNilAndDoesNotCreateWhenMissing(t *testing.T) {
 }
 
 func TestFindPathWithEmptyPathReturnsRoot(t *testing.T) {
-	root := scenepkg.NewTreeNode()
+	root := NewTreeNode()
 
 	got, ok := root.FindPath(nil)
 	if !ok {

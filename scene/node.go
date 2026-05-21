@@ -50,3 +50,12 @@ func (n *TreeNode) FindPath(path []string) (*TreeNode, bool) {
 	}
 	return cur, true
 }
+
+// Walk performs a depth-first traversal of the entire tree rooted at n,
+// calling fn on every node (including n itself).
+func (n *TreeNode) Walk(fn func(*TreeNode)) {
+	fn(n)
+	for _, child := range n.Children {
+		child.Walk(fn)
+	}
+}

@@ -1,12 +1,14 @@
 package zmq
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	meshcatgo "github.com/WrenchRobotics/meshcat-go"
 	"github.com/WrenchRobotics/meshcat-go/commands"
 	"github.com/WrenchRobotics/meshcat-go/scene"
 	"github.com/gin-gonic/gin"
@@ -97,6 +99,17 @@ func (bridge *ZeroMQWebsocketBridge) hasWebsocketConn() bool {
 	return len(bridge.wsPool) > 0
 }
 
+func (bridge *ZeroMQWebsocketBridge) forwardToWebsockets(data []byte) {
+	bridge.wsMu.RLock()
+	defer bridge.wsMu.RUnlock()
+
+	for conn := range bridge.wsPool {
+		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			log.Printf("failed to forward message to websocket: %v", err)
+		}
+	}
+}
+
 func (bridge *ZeroMQWebsocketBridge) waitForWebsockets() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -139,7 +152,64 @@ func (bridge *ZeroMQWebsocketBridge) HandleZMQFrameSlice(frames [][]byte) {
 		log.Printf("Received Wait command: %s", cmd)
 		bridge.waitForWebsockets()
 		return
-
+	case commands.SetTarget:
+		log.Printf("Received SetTarget command: %s", cmd)
+		bridge.forwardToWebsockets(frames[2])
+		if err := bridge.ZMQStream.SendFrame([]byte("ok"), goczmq.FlagNone); err != nil {
+			log.Printf("failed to send ok for set_target: %v", err)
+		}
+		return
+	case commands.GetScene:
+		log.Printf("Received GetScene command: %s", cmd)
+		var drawingCmds strings.Builder
+		bridge.SceneTree.Walk(func(node *scene.TreeNode) {
+			if node.Object != nil {
+				if b, ok := node.Object.([]byte); ok {
+					drawingCmds.WriteString(zmqCreateCommand(b))
+				}
+			}
+			for _, p := range node.Properties {
+				if b, ok := p.([]byte); ok {
+					drawingCmds.WriteString(zmqCreateCommand(b))
+				}
+			}
+			if node.Transform != nil {
+				if b, ok := node.Transform.([]byte); ok {
+					drawingCmds.WriteString(zmqCreateCommand(b))
+				}
+			}
+			if node.Animation != nil {
+				if b, ok := node.Animation.([]byte); ok {
+					drawingCmds.WriteString(zmqCreateCommand(b))
+				}
+			}
+		})
+		jsBytes, err := meshcatgo.ViewerAssets.ReadFile("third_party/meshcat-js/dist/main.min.js")
+		if err != nil {
+			log.Printf("get_scene: failed to read main.min.js: %v", err)
+			return
+		}
+		html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+	<head><meta charset=utf-8><title>MeshCat</title></head>
+	<body>
+		<div id="meshcat-pane"></div>
+		<script>%s</script>
+		<script>
+			var viewer = new MeshCat.Viewer(document.getElementById("meshcat-pane"));
+			%s
+		</script>
+		<style>
+			body { margin: 0; }
+			#meshcat-pane { width: 100vw; height: 100vh; overflow: hidden; }
+		</style>
+		<script id="embedded-json"></script>
+	</body>
+</html>`, string(jsBytes), drawingCmds.String())
+		if err := bridge.ZMQStream.SendFrame([]byte(html), goczmq.FlagNone); err != nil {
+			log.Printf("get_scene: failed to send HTML: %v", err)
+		}
+		return
 	}
 
 	// - Meshcat-specific commands (e.g. "set_transform", etc.)
@@ -289,9 +359,10 @@ func NewZeroMQWebsocketBridge() *ZeroMQWebsocketBridge {
 	defaultPort := 6000
 
 	bridge := ZeroMQWebsocketBridge{
-		Host:   ZMQ_DEFAULT_HOST,
-		wsPool: make(map[*websocket.Conn]struct{}),
-		stopCh: make(chan struct{}),
+		Host:      ZMQ_DEFAULT_HOST,
+		SceneTree: scene.NewTreeNode(),
+		wsPool:    make(map[*websocket.Conn]struct{}),
+		stopCh:    make(chan struct{}),
 	}
 
 	_, zmqStream, foundPort, err := FindAvailablePort(bridge.SetUpZMQ, defaultPort, 100)
@@ -361,14 +432,28 @@ func (bridge *ZeroMQWebsocketBridge) SetUpZMQ(port int) (*goczmq.Sock, *goczmq.S
 	// Setup/Defaults
 	defaultZMQMethod := "tcp"
 
-	// Create the stream socket to connect to the router
+	// Create a REP socket to match the Python meshcat server's zmq.REP socket.
+	// REP enforces a strict receive-then-send cycle, which is the protocol used
+	// by all meshcat clients (Python, Go, etc.).
 	targetURL := GenerateZMQUrl(defaultZMQMethod, bridge.Host, port)
-	zmqStream, err := goczmq.NewStream(targetURL)
-	if err != nil {
+	repSocket := goczmq.NewSock(goczmq.Rep)
+	if _, err := repSocket.Bind(targetURL); err != nil {
+		repSocket.Destroy()
 		return nil, nil, err
 	}
 
-	return nil, zmqStream, nil
+	return nil, repSocket, nil
+}
+
+// zmqCreateCommand converts a raw msgpack blob into a JavaScript statement
+// that the MeshCat viewer can execute via handle_command_bytearray.
+// Base64 encoding is used to keep the output compact for large meshes.
+func zmqCreateCommand(data []byte) string {
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf(
+		`viewer.handle_command_bytearray(Uint8Array.from(atob(%q), c => c.charCodeAt(0)));`+"\n",
+		b64,
+	)
 }
 
 func (bridge *ZeroMQWebsocketBridge) BuildWebUrl(fileServerPort int) string {

@@ -45,7 +45,7 @@ func (h *Hub) run() {
 				select {
 				case client.send <- message:
 					// Message sent successfully
-					
+
 				default:
 					close(client.send)
 					delete(h.clients, client)
