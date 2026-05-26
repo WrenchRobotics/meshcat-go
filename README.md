@@ -3,6 +3,8 @@ A library defined to wrap around the MeshCat 3D Viewer in Golang.
 
 ## Installation
 
+### Prerequisites
+
 This project uses `github.com/zeromq/goczmq` for the ZeroMQ bridge.
 On macOS, install the native libraries first:
 
@@ -10,11 +12,15 @@ On macOS, install the native libraries first:
 brew install libsodium zeromq czmq
 ```
 
+### Installation (Standard)
+
 To add this library to your own Go module:
 
 ```bash
 go get github.com/WrenchRobotics/meshcat-go@latest
 ```
+
+### Local Installation (Advanced, For Developers)
 
 If you cloned this repository for local development, fetch Go dependencies:
 
