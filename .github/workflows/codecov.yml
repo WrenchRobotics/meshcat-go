@@ -41,10 +41,11 @@ jobs:
         shell: pwsh
         run: |
           choco install -y pkgconfiglite
-          vcpkg install zeromq:x64-windows czmq:x64-windows
-          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "CGO_CFLAGS=-IC:\vcpkg\installed\x64-windows\include" >> $env:GITHUB_ENV
-          echo "CGO_LDFLAGS=-LC:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
+          vcpkg install libsodium:x64-mingw-dynamic zeromq:x64-mingw-dynamic czmq:x64-mingw-dynamic
+          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-mingw-dynamic\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "CGO_CFLAGS=-IC:\vcpkg\installed\x64-mingw-dynamic\include" >> $env:GITHUB_ENV
+          echo "CGO_LDFLAGS=-LC:\vcpkg\installed\x64-mingw-dynamic\lib" >> $env:GITHUB_ENV
+          echo "PATH=C:\vcpkg\installed\x64-mingw-dynamic\bin;$env:PATH" >> $env:GITHUB_ENV
 
       - name: Build
         run: go install ./...
