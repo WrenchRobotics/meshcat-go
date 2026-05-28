@@ -1,4 +1,4 @@
-name: Code Coverage  # The name of the workflow that will appear on Github
+name: Code Coverage  # The name of the workflow that will appear on GitHub
 
 on:
   pull_request:
