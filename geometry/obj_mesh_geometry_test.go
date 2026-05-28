@@ -1,5 +1,4 @@
 package geometry
-package geometry
 
 import (
 	"bytes"
