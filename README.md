@@ -49,6 +49,7 @@ git submodule update --init --recursive
 
 The Go websocket app serves the pinned viewer files from:
 
-- `http://<host>:<port>/viewer/`
+- `http://<host>:<port>/static/`
 
+The viewer's JavaScript client connects to the websocket endpoint at `ws://<host>:<port>/ws`.
 The viewer's JavaScript client connects to the websocket endpoint at `ws://<host>:<port>/ws`.
