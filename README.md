@@ -41,6 +41,8 @@ The built MeshCat viewer files are vendored directly in this repository at:
 
 These files are embedded into the Go binary, so standard source checkouts and CI jobs do not need git submodules to serve the viewer.
 
+The legacy `third_party/meshcat-js` submodule has been removed. No git submodules are required for regular development, CI, or runtime use.
+
 ### Updating Vendored Viewer Assets (Maintainers)
 
 Use the Go maintainer tool to pull and build upstream MeshCat, then refresh `viewer_assets/dist`:

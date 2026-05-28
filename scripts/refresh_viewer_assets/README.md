@@ -2,6 +2,8 @@
 
 This folder contains a small maintainer tool for updating vendored MeshCat viewer files in `viewer_assets/dist`.
 
+It clones upstream MeshCat into a temporary directory, so a local git submodule checkout is not required.
+
 ## What it does
 
 - Clones upstream MeshCat
