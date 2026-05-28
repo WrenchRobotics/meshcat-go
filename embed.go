@@ -2,5 +2,5 @@ package meshcatgo
 
 import "embed"
 
-//go:embed third_party/meshcat-js/dist/*
+//go:embed viewer_assets/dist/*
 var ViewerAssets embed.FS

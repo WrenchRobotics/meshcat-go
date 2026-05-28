@@ -118,8 +118,8 @@ func NewMeshcatWebServerApplicationWithPort(webPort int) MeshcatWebServerApplica
 	// Set the router as the default one shipped with Gin
 	router := gin.Default()
 
-	// Serve the JavaScript MeshCat viewer bundled as a git submodule.
-	distFS, err := fs.Sub(meshcatgo.ViewerAssets, "third_party/meshcat-js/dist")
+	// Serve the JavaScript MeshCat viewer bundled as vendored assets.
+	distFS, err := fs.Sub(meshcatgo.ViewerAssets, "viewer_assets/dist")
 	if err != nil {
 		panic(err)
 	}
