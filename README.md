@@ -43,8 +43,20 @@ These files are embedded into the Go binary, so standard source checkouts and CI
 
 ### Updating Vendored Viewer Assets (Maintainers)
 
-When you need to refresh to a newer upstream MeshCat viewer build, replace the files in `viewer_assets/dist` with a new `dist` build output.
-The required files are:
+Use the Go maintainer tool to pull and build upstream MeshCat, then refresh `viewer_assets/dist`:
+
+```bash
+go run ./scripts/refresh_viewer_assets -ref master
+```
+
+`-ref` accepts a branch name, tag, or commit hash. Examples:
+
+```bash
+go run ./scripts/refresh_viewer_assets -ref main
+go run ./scripts/refresh_viewer_assets -ref 65781fcb064db536b99a66fe9fcf5bf0b6d1f790
+```
+
+The script requires `git` and `npm` on your PATH. The required viewer files are:
 
 - `index.html`
 - `main.min.js`
