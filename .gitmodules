@@ -1,0 +1,6 @@
+[submodule "meshcat/viewer"]
+	path = meshcat_impl/servers/viewer
+	url = https://github.com/meshcat-dev/meshcat.git
+[submodule "third_party/meshcat-js"]
+	path = third_party/meshcat-js
+	url = https://github.com/meshcat-dev/meshcat.git
