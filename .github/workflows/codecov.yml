@@ -36,16 +36,37 @@ jobs:
           brew update
           brew install pkg-config libsodium zeromq czmq
 
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-libsodium
+            mingw-w64-x86_64-zeromq
+            mingw-w64-x86_64-czmq
+
       - name: Install ZeroMQ prerequisites (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install -y pkgconfiglite
-          vcpkg install libsodium:x64-mingw-dynamic zeromq:x64-mingw-dynamic czmq:x64-mingw-dynamic
-          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-mingw-dynamic\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "CGO_CFLAGS=-IC:\vcpkg\installed\x64-mingw-dynamic\include" >> $env:GITHUB_ENV
-          echo "CGO_LDFLAGS=-LC:\vcpkg\installed\x64-mingw-dynamic\lib" >> $env:GITHUB_ENV
-          echo "PATH=C:\vcpkg\installed\x64-mingw-dynamic\bin;$env:PATH" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=C:\msys64\mingw64\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "CGO_CFLAGS=-IC:\msys64\mingw64\include" >> $env:GITHUB_ENV
+          echo "CGO_LDFLAGS=-LC:\msys64\mingw64\lib" >> $env:GITHUB_ENV
+          echo "CC=C:\msys64\mingw64\bin\gcc.exe" >> $env:GITHUB_ENV
+          echo "PATH=C:\msys64\mingw64\bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: Verify ZeroMQ toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          gcc --version
+          pkg-config --version
+          pkg-config --modversion libzmq libczmq libsodium
+          pkg-config --libs libzmq libczmq libsodium
 
       - name: Build
         run: go install ./...
