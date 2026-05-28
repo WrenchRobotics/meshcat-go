@@ -1,6 +1,6 @@
 # Launch Server App Only
 
-In this example, we provide an exxample that shows how one can launch JUST the server side Meshcat app.
+In this example, we provide an example that shows how one can launch JUST the server side Meshcat app.
 
 Usually, users will need:
 - The Meshcat server to run (for visualizing in the browser), and 
