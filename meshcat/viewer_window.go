@@ -337,8 +337,20 @@ func (zc *ZMQClient) sendZMQCommand(cmd string, path []string, payload []byte) e
 	}
 
 	// Wait for reply
-	_, _, err := req.RecvFrame()
-	return err
+	reply, _, err := req.RecvFrame()
+	if err != nil {
+		return err
+	}
+
+	replyText := strings.TrimSpace(string(reply))
+	if replyText != "ok" {
+		if replyText == "" {
+			replyText = "empty reply"
+		}
+		return fmt.Errorf("zmq command %q failed: %s", cmd, replyText)
+	}
+
+	return nil
 }
 
 func (zc *ZMQClient) msgpackEncode(v interface{}) ([]byte, error) {
