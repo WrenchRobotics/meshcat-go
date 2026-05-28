@@ -119,13 +119,22 @@ func (bridge *ZeroMQWebsocketBridge) hasWebsocketConn() bool {
 }
 
 func (bridge *ZeroMQWebsocketBridge) forwardToWebsockets(data []byte) {
-	if !bridge.hasWebsocketConn() {
+	bridge.wsMu.RLock()
+	if len(bridge.wsPool) == 0 {
+		bridge.wsMu.RUnlock()
 		log.Println("No active WebSocket connections. Cannot forward data.")
 		return
 	}
+	conns := make([]*websocket.Conn, 0, len(bridge.wsPool))
+	for conn := range bridge.wsPool {
+		if conn != nil {
+			conns = append(conns, conn)
+		}
+	}
+	bridge.wsMu.RUnlock()
 
 	log.Printf("Forwarding data to WebSocket connections: %d bytes", len(data))
-	for conn := range bridge.wsPool {
+	for _, conn := range conns {
 		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			log.Printf("Failed to forward data to WebSocket: %v", err)
 		}
