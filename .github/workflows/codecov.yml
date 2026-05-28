@@ -51,6 +51,7 @@ jobs:
         run: go install ./...
 
       - name: Test Coverage
+        shell: bash
         run: |
           go test -v -cover $(go list ./... | grep -v /examples/) -coverprofile coverage.out -coverpkg ./...
 
