@@ -23,17 +23,17 @@ import (
 	"github.com/zeromq/goczmq"
 )
 
-func msgpackEncode(v any) []byte {
+func msgpackEncode(v any) ([]byte, error) {
 	var out []byte
 	h := new(codec.MsgpackHandle)
 	enc := codec.NewEncoderBytes(&out, h)
 	if err := enc.Encode(v); err != nil {
-		panic(fmt.Sprintf("failed to msgpack encode command: %v", err))
+		return nil, fmt.Errorf("failed to msgpack encode command: %w", err)
 	}
-	return out
+	return out, nil
 }
 
-func makeSetObjectBoxCmd(path string) []byte {
+func makeSetObjectBoxCmd(path string) ([]byte, error) {
 	geometryUUID := "box-geometry"
 	materialUUID := "box-material"
 	objectUUID := "box-object"
@@ -82,7 +82,7 @@ func makeSetObjectBoxCmd(path string) []byte {
 	return msgpackEncode(cmd)
 }
 
-func makeSetTransformCmd(path string, x, y, z float64) []byte {
+func makeSetTransformCmd(path string, x, y, z float64) ([]byte, error) {
 	cmd := map[string]any{
 		"type": "set_transform",
 		"path": path,
@@ -104,8 +104,16 @@ func main() {
 	// generated HTML contains visible geometry.
 	box := bridge.SceneTree.GetPath([]string{"meshcat", "box"})
 	boxPath := "/meshcat/box"
-	box.Object = makeSetObjectBoxCmd(boxPath)
-	box.Transform = makeSetTransformCmd(boxPath, 0.0, 0.0, 0.2)
+	boxObjectCmd, err := makeSetObjectBoxCmd(boxPath)
+	if err != nil {
+		log.Fatalf("failed to create set_object command: %v", err)
+	}
+	boxTransformCmd, err := makeSetTransformCmd(boxPath, 0.0, 0.0, 0.2)
+	if err != nil {
+		log.Fatalf("failed to create set_transform command: %v", err)
+	}
+	box.Object = boxObjectCmd
+	box.Transform = boxTransformCmd
 
 	go bridge.Run()
 	defer bridge.Stop()

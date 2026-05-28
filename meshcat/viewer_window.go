@@ -178,7 +178,10 @@ type lowerableSceneObject interface {
 // SetObject sends a set_object command to the Meshcat server.
 func (zc *ZMQClient) SetObject(path []string, obj interface{}) error {
 	normalizedObj := normalizeSetObjectPayload(obj)
-	cmd := zc.makeSetObjectCommand(path, normalizedObj)
+	cmd, err := zc.makeSetObjectCommand(path, normalizedObj)
+	if err != nil {
+		return fmt.Errorf("failed to build set_object command: %w", err)
+	}
 	if zc.bridge != nil {
 		// Direct bridge access for local servers
 		frames := [][]byte{[]byte("set_object"), []byte(formatPath(path)), cmd}
@@ -206,7 +209,10 @@ func normalizeSetObjectPayload(obj interface{}) interface{} {
 
 // SetTransform sends a set_transform command to the Meshcat server.
 func (zc *ZMQClient) SetTransform(path []string, transform [4][4]float64) error {
-	cmd := zc.makeSetTransformCommand(path, transform)
+	cmd, err := zc.makeSetTransformCommand(path, transform)
+	if err != nil {
+		return fmt.Errorf("failed to build set_transform command: %w", err)
+	}
 	if zc.bridge != nil {
 		// Direct bridge access for local servers
 		frames := [][]byte{[]byte("set_transform"), []byte(formatPath(path)), cmd}
@@ -220,7 +226,10 @@ func (zc *ZMQClient) SetTransform(path []string, transform [4][4]float64) error 
 
 // SetProperty sends a set_property command to the Meshcat server.
 func (zc *ZMQClient) SetProperty(path []string, property string, value interface{}) error {
-	cmd := zc.makeSetPropertyCommand(path, property, value)
+	cmd, err := zc.makeSetPropertyCommand(path, property, value)
+	if err != nil {
+		return fmt.Errorf("failed to build set_property command: %w", err)
+	}
 	if zc.bridge != nil {
 		frames := [][]byte{[]byte("set_property"), []byte(formatPath(path)), cmd}
 		zc.bridge.HandleLocalFrameSlice(frames)
@@ -232,7 +241,10 @@ func (zc *ZMQClient) SetProperty(path []string, property string, value interface
 
 // Delete sends a delete command to the Meshcat server.
 func (zc *ZMQClient) Delete(path []string) error {
-	cmd := zc.makeDeleteCommand(path)
+	cmd, err := zc.makeDeleteCommand(path)
+	if err != nil {
+		return fmt.Errorf("failed to build delete command: %w", err)
+	}
 	if zc.bridge != nil {
 		// Direct bridge access for local servers
 		frames := [][]byte{[]byte("delete"), []byte(formatPath(path)), cmd}
@@ -252,7 +264,7 @@ func (zc *ZMQClient) Open() error {
 
 // Helper methods
 
-func (zc *ZMQClient) makeSetObjectCommand(path []string, obj interface{}) []byte {
+func (zc *ZMQClient) makeSetObjectCommand(path []string, obj interface{}) ([]byte, error) {
 	cmd := map[string]interface{}{
 		"type":   "set_object",
 		"path":   formatPath(path),
@@ -261,7 +273,7 @@ func (zc *ZMQClient) makeSetObjectCommand(path []string, obj interface{}) []byte
 	return zc.msgpackEncode(cmd)
 }
 
-func (zc *ZMQClient) makeSetTransformCommand(path []string, transform [4][4]float64) []byte {
+func (zc *ZMQClient) makeSetTransformCommand(path []string, transform [4][4]float64) ([]byte, error) {
 	// Convert transform matrix to flat array for msgpack
 	matrix := make([]float64, 16)
 	for i := 0; i < 4; i++ {
@@ -278,7 +290,7 @@ func (zc *ZMQClient) makeSetTransformCommand(path []string, transform [4][4]floa
 	return zc.msgpackEncode(cmd)
 }
 
-func (zc *ZMQClient) makeSetPropertyCommand(path []string, property string, value interface{}) []byte {
+func (zc *ZMQClient) makeSetPropertyCommand(path []string, property string, value interface{}) ([]byte, error) {
 	cmd := map[string]interface{}{
 		"type":     "set_property",
 		"path":     formatPath(path),
@@ -288,7 +300,7 @@ func (zc *ZMQClient) makeSetPropertyCommand(path []string, property string, valu
 	return zc.msgpackEncode(cmd)
 }
 
-func (zc *ZMQClient) makeDeleteCommand(path []string) []byte {
+func (zc *ZMQClient) makeDeleteCommand(path []string) ([]byte, error) {
 	cmd := map[string]interface{}{
 		"type": "delete",
 		"path": formatPath(path),
@@ -329,15 +341,14 @@ func (zc *ZMQClient) sendZMQCommand(cmd string, path []string, payload []byte) e
 	return err
 }
 
-func (zc *ZMQClient) msgpackEncode(v interface{}) []byte {
+func (zc *ZMQClient) msgpackEncode(v interface{}) ([]byte, error) {
 	var out []byte
 	h := new(codec.MsgpackHandle)
 	enc := codec.NewEncoderBytes(&out, h)
 	if err := enc.Encode(v); err != nil {
-		log.Printf("failed to msgpack encode: %v", err)
-		return []byte{}
+		return nil, fmt.Errorf("failed to msgpack encode: %w", err)
 	}
-	return out
+	return out, nil
 }
 
 func formatPath(path []string) string {
