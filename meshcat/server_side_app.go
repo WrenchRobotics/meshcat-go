@@ -119,7 +119,10 @@ func NewMeshcatWebServerApplicationWithPort(webPort int) MeshcatWebServerApplica
 	router := gin.Default()
 
 	// Serve the JavaScript MeshCat viewer bundled as a git submodule.
-	distFS, _ := fs.Sub(meshcatgo.ViewerAssets, "third_party/meshcat-js/dist")
+	distFS, err := fs.Sub(meshcatgo.ViewerAssets, "third_party/meshcat-js/dist")
+	if err != nil {
+		panic(err)
+	}
 	router.StaticFS("/static", http.FS(distFS))
 	router.GET("/", func(c *gin.Context) {
 		// Meshcat JS defaults to ws://<host> (no path), so accept websocket upgrades on root.
