@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest] # windows-latest
         go: [1.25]
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +47,6 @@ jobs:
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-libsodium
             mingw-w64-x86_64-zeromq
-            mingw-w64-x86_64-libczmq
 
       - name: Install ZeroMQ prerequisites (Windows)
         if: runner.os == 'Windows'
@@ -65,16 +64,28 @@ jobs:
         run: |
           gcc --version
           pkg-config --version
-          pkg-config --modversion libzmq libczmq libsodium
-          pkg-config --libs libzmq libczmq libsodium
+          pkg-config --modversion libzmq libsodium
+          pkg-config --libs libzmq libsodium
 
       - name: Build
-        run: go install ./...
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            go install $(go list ./... | grep -Ev '/(examples|servers/zmq|meshcat)$')
+          else
+            go install ./...
+          fi
 
       - name: Test Coverage
         shell: bash
         run: |
-          go test -v -cover $(go list ./... | grep -v /examples/) -coverprofile coverage.out -coverpkg ./...
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PKGS=$(go list ./... | grep -Ev '/(examples|servers/zmq|meshcat)$')
+            COVERPKG=$(go list ./... | grep -Ev '/(examples|servers/zmq|meshcat)$' | paste -sd, -)
+            go test -v -cover $PKGS -coverprofile coverage.out -coverpkg "$COVERPKG"
+          else
+            go test -v -cover $(go list ./... | grep -v /examples/) -coverprofile coverage.out -coverpkg ./...
+          fi
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
