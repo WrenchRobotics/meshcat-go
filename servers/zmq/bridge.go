@@ -395,7 +395,7 @@ func (bridge *ZeroMQWebsocketBridge) handleFrameSlice(frames [][]byte, sendRepli
 				}
 			}
 		})
-		jsBytes, err := meshcatgo.ViewerAssets.ReadFile("third_party/meshcat-js/dist/main.min.js")
+		jsBytes, err := meshcatgo.ViewerAssets.ReadFile("viewer_assets/dist/main.min.js")
 		if err != nil {
 			log.Printf("get_scene: failed to read main.min.js: %v", err)
 			return

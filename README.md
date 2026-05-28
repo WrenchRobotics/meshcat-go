@@ -33,23 +33,39 @@ Notes:
 - These native libraries are required for the ZeroMQ bridge and examples (including `examples/get_scene`).
 - If you only consume packages that do not touch the ZMQ bridge, you may not need them at runtime, but building/testing bridge-related code will require them.
 
-## MeshCat Viewer Submodule
+## MeshCat Viewer Assets
 
-This repository uses a git submodule to pin the upstream JavaScript viewer:
+The built MeshCat viewer files are vendored directly in this repository at:
 
-- Repository: `https://github.com/meshcat-dev/meshcat`
-- Commit: `65781fcb064db536b99a66fe9fcf5bf0b6d1f790`
-- Path: `third_party/meshcat-js`
+- `viewer_assets/dist`
 
-When cloning this repository, initialize submodules:
+These files are embedded into the Go binary, so standard source checkouts and CI jobs do not need git submodules to serve the viewer.
+
+The legacy `third_party/meshcat-js` submodule has been removed. No git submodules are required for regular development, CI, or runtime use.
+
+### Updating Vendored Viewer Assets (Maintainers)
+
+Use the Go maintainer tool to pull and build upstream MeshCat, then refresh `viewer_assets/dist`:
 
 ```bash
-git submodule update --init --recursive
+go run ./scripts/refresh_viewer_assets -ref master
 ```
 
-The Go websocket app serves the pinned viewer files from:
+`-ref` accepts a branch name, tag, or commit hash. Examples:
+
+```bash
+go run ./scripts/refresh_viewer_assets -ref main
+go run ./scripts/refresh_viewer_assets -ref 65781fcb064db536b99a66fe9fcf5bf0b6d1f790
+```
+
+The script requires `git` and `npm` on your PATH. The required viewer files are:
+
+- `index.html`
+- `main.min.js`
+- `main.min.js.THIRD_PARTY_LICENSES.json`
+
+The Go websocket app serves the vendored viewer files from:
 
 - `http://<host>:<port>/static/`
 
-The viewer's JavaScript client connects to the websocket endpoint at `ws://<host>:<port>/ws`.
 The viewer's JavaScript client connects to the websocket endpoint at `ws://<host>:<port>/ws`.
