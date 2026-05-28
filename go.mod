@@ -1,6 +1,6 @@
 module github.com/WrenchRobotics/meshcat-go
 
-go 1.25.4
+go 1.25
 
 require (
 	github.com/alexflint/go-arg v1.6.0
