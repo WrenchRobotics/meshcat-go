@@ -271,9 +271,13 @@ func (bridge *ZeroMQWebsocketBridge) HandleLocalFrameSlice(frames [][]byte) {
 
 func (bridge *ZeroMQWebsocketBridge) handleFrameSlice(frames [][]byte, sendReplies bool) {
 	// Input Checking
+	// Input Checking
 	if len(frames) == 0 {
 		log.Println("Received empty frame slice")
-		panic("Received empty frame slice")
+		if sendReplies {
+			_ = bridge.ZMQStream.SendFrame([]byte("error: empty request"), goczmq.FlagNone)
+		}
+		return
 	}
 
 	// Attempt to handle the frames according to:
